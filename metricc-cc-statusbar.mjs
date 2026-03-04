@@ -88,7 +88,7 @@ const SECTION_DEFAULTS = {
 function readConfig() {
   try {
     if (!existsSync(CONFIG_PATH)) {
-      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical" };
+      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative" };
     }
     const cfg = parseJsonc(readFileSync(CONFIG_PATH, "utf-8"));
     const enabled = ALL_COLUMNS.filter((id) => {
@@ -96,9 +96,10 @@ function readConfig() {
       return SECTION_DEFAULTS[id] !== false;
     });
     const layout = cfg.layout === "horizontal" ? "horizontal" : "vertical";
-    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout };
+    const resetTimeFormat = cfg.resetTimeFormat === "absolute" ? "absolute" : "relative";
+    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat };
   } catch {
-    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical" };
+    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative" };
   }
 }
 
@@ -526,12 +527,26 @@ function contextBar(pct) {
   return `${color}[${"█".repeat(filled)}${"░".repeat(empty)}]${pct}%${c.reset}`;
 }
 
-function formatResetTime(resetDate) {
+function formatResetTime(resetDate, format = "relative") {
   if (!resetDate) return "";
   const d = resetDate instanceof Date ? resetDate : new Date(resetDate);
   if (isNaN(d.getTime())) return "";
   const ms = d.getTime() - Date.now();
   if (ms <= 0) return "";
+
+  if (format === "absolute") {
+    const now = new Date();
+    const sameDay = d.getDate() === now.getDate()
+      && d.getMonth() === now.getMonth()
+      && d.getFullYear() === now.getFullYear();
+    const timeStr = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      .replace(/\s?(AM|PM)$/i, (_, p) => p.toLowerCase());
+    const short = sameDay
+      ? timeStr
+      : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${timeStr}`;
+    return `${c.slate600}(${short})${c.reset}`;
+  }
+
   const totalMin = Math.floor(ms / 60_000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
@@ -563,7 +578,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     let fhValue;
     if (usage) {
       const fhColor = colorForPercent(usage.fiveHour, 60, 80);
-      const fhReset = formatResetTime(usage.fiveHourResets);
+      const fhReset = formatResetTime(usage.fiveHourResets, config.resetTimeFormat);
       fhValue = `${fhColor}${Math.round(usage.fiveHour)}%${c.reset}${fhReset ? ` ${fhReset}` : ""}`;
     } else {
       fhValue = `${c.slate600}N/A${c.reset}`;
@@ -576,7 +591,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     let wkValue;
     if (usage) {
       const wkColor = colorForPercent(usage.sevenDay, 60, 80);
-      const wkReset = formatResetTime(usage.sevenDayResets);
+      const wkReset = formatResetTime(usage.sevenDayResets, config.resetTimeFormat);
       wkValue = `${wkColor}${Math.round(usage.sevenDay)}%${c.reset}${wkReset ? ` ${wkReset}` : ""}`;
     } else {
       wkValue = `${c.slate600}N/A${c.reset}`;
@@ -673,13 +688,13 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
 
   // 5h Reset (standalone countdown)
   if (show("5h Reset")) {
-    const resetStr = usage?.fiveHourResets ? formatResetTime(usage.fiveHourResets) : `${c.slate600}N/A${c.reset}`;
+    const resetStr = usage?.fiveHourResets ? formatResetTime(usage.fiveHourResets, config.resetTimeFormat) : `${c.slate600}N/A${c.reset}`;
     columns.push({ label: `${c.slate800bold}5h Reset:${c.reset}`, value: resetStr || `${c.slate600}N/A${c.reset}` });
   }
 
   // 7d Reset (standalone countdown)
   if (show("7d Reset")) {
-    const resetStr = usage?.sevenDayResets ? formatResetTime(usage.sevenDayResets) : `${c.slate600}N/A${c.reset}`;
+    const resetStr = usage?.sevenDayResets ? formatResetTime(usage.sevenDayResets, config.resetTimeFormat) : `${c.slate600}N/A${c.reset}`;
     columns.push({ label: `${c.slate800bold}7d Reset:${c.reset}`, value: resetStr || `${c.slate600}N/A${c.reset}` });
   }
 

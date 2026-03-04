@@ -2,6 +2,9 @@
   // "vertical" = labels above values, "horizontal" = single row
   "layout": "vertical",
 
+  // "relative" = countdown (e.g. ~3h, 45m), "absolute" = clock time (e.g. 5:00 PM, Mar 6 12:00 AM)
+  "resetTimeFormat": "relative",
+
   // --- Standard (on by default) ---
   "5h Usage": true,      // 5-hour rolling rate-limit utilization %
   "7d Usage": true,      // 7-day rolling rate-limit utilization %
