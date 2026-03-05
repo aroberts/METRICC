@@ -527,7 +527,7 @@ function contextBar(pct) {
   return `${color}[${"█".repeat(filled)}${"░".repeat(empty)}]${pct}%${c.reset}`;
 }
 
-function formatResetTime(resetDate, format = "relative") {
+function formatResetTime(resetDate, format = "relative", { showDate = true } = {}) {
   if (!resetDate) return "";
   const d = resetDate instanceof Date ? resetDate : new Date(resetDate);
   if (isNaN(d.getTime())) return "";
@@ -535,12 +535,13 @@ function formatResetTime(resetDate, format = "relative") {
   if (ms <= 0) return "";
 
   if (format === "absolute") {
+    const timeStr = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      .replace(/\s?(AM|PM)$/i, (_, p) => p.toLowerCase());
+    if (!showDate) return `${c.slate600}(${timeStr})${c.reset}`;
     const now = new Date();
     const sameDay = d.getDate() === now.getDate()
       && d.getMonth() === now.getMonth()
       && d.getFullYear() === now.getFullYear();
-    const timeStr = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-      .replace(/\s?(AM|PM)$/i, (_, p) => p.toLowerCase());
     const short = sameDay
       ? timeStr
       : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${timeStr}`;
@@ -578,7 +579,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     let fhValue;
     if (usage) {
       const fhColor = colorForPercent(usage.fiveHour, 60, 80);
-      const fhReset = formatResetTime(usage.fiveHourResets, config.resetTimeFormat);
+      const fhReset = formatResetTime(usage.fiveHourResets, config.resetTimeFormat, { showDate: false });
       fhValue = `${fhColor}${Math.round(usage.fiveHour)}%${c.reset}${fhReset ? ` ${fhReset}` : ""}`;
     } else {
       fhValue = `${c.slate600}N/A${c.reset}`;
@@ -688,7 +689,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
 
   // 5h Reset (standalone countdown)
   if (show("5h Reset")) {
-    const resetStr = usage?.fiveHourResets ? formatResetTime(usage.fiveHourResets, config.resetTimeFormat) : `${c.slate600}N/A${c.reset}`;
+    const resetStr = usage?.fiveHourResets ? formatResetTime(usage.fiveHourResets, config.resetTimeFormat, { showDate: false }) : `${c.slate600}N/A${c.reset}`;
     columns.push({ label: `${c.slate800bold}5h Reset:${c.reset}`, value: resetStr || `${c.slate600}N/A${c.reset}` });
   }
 
