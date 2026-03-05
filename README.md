@@ -241,7 +241,7 @@ Then add to `C:\Users\YourName\.claude\settings.json`:
 
 ## ![](docs/images/icon-20px-gear-six-sky-500-regular-config.png) Configuration
 
-Edit `~/.claude/hud/config.jsonc` to toggle any stat on or off:
+Edit `~/.claude/hud/config.jsonc` (or `$CLAUDE_CONFIG_DIR/hud/config.jsonc` if set) to toggle any stat on or off:
 
 ```jsonc
 {
@@ -272,6 +272,8 @@ Edit `~/.claude/hud/config.jsonc` to toggle any stat on or off:
 
  - ![](docs/images/icon-16px-check-square-slate-500-regular.png) No restart required — changes apply on next render
  - ![](docs/images/icon-16px-check-square-slate-500-regular.png) Missing keys fall back to their section default
+
+> **Custom config directory:** If you use `CLAUDE_CONFIG_DIR` to point Claude Code at a non-default location, METRICC will automatically read config, cache, and credentials from that directory instead of `~/.claude`. No extra setup needed — just make sure the environment variable is set when Claude Code launches.
 
 ---
 

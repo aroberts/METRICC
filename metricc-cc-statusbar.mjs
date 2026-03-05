@@ -37,10 +37,11 @@ const ALL_COLUMNS = [
 ];
 
 const HOME = homedir();
-const CONFIG_PATH = join(HOME, ".claude", "hud", "config.jsonc");
-const CACHE_PATH = join(HOME, ".claude", "hud", ".usage-cache.json");
-const VERSION_CACHE_PATH = join(HOME, ".claude", "hud", ".version-cache.json");
-const CRED_PATH = join(HOME, ".claude", ".credentials.json");
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(HOME, ".claude");
+const CONFIG_PATH = join(CLAUDE_DIR, "hud", "config.jsonc");
+const CACHE_PATH = join(CLAUDE_DIR, "hud", ".usage-cache.json");
+const VERSION_CACHE_PATH = join(CLAUDE_DIR, "hud", ".version-cache.json");
+const CRED_PATH = join(CLAUDE_DIR, ".credentials.json");
 
 // ── ANSI Colors ────────────────────────────────────────────────────────────────
 const c = {
@@ -66,7 +67,7 @@ const c = {
 };
 
 // ── Config ─────────────────────────────────────────────────────────────────────
-// Config file: ~/.claude/hud/config.json (supports // comments)
+// Config file: $CLAUDE_CONFIG_DIR/hud/config.jsonc (defaults to ~/.claude/hud/config.jsonc)
 // Toggle columns with true/false. Missing keys default to their section default.
 function parseJsonc(text) {
   // Strip both full-line and inline comments, then trailing commas
