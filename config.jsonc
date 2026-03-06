@@ -17,6 +17,7 @@
   "Changes": false,      // Lines added/removed this session
   "Directory": false,    // Current working directory
   "Cost": false,         // Estimated session cost in USD
+  "costThresholds": [0.25, 1.00], // [yellow, red] USD thresholds for cost color
 
   // --- Advanced (off by default) ---
   "Tokens": false,       // Total input tokens in context window

@@ -89,7 +89,7 @@ const SECTION_DEFAULTS = {
 function readConfig() {
   try {
     if (!existsSync(CONFIG_PATH)) {
-      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative" };
+      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1] };
     }
     const cfg = parseJsonc(readFileSync(CONFIG_PATH, "utf-8"));
     const enabled = ALL_COLUMNS.filter((id) => {
@@ -98,9 +98,13 @@ function readConfig() {
     });
     const layout = cfg.layout === "horizontal" ? "horizontal" : "vertical";
     const resetTimeFormat = cfg.resetTimeFormat === "absolute" ? "absolute" : "relative";
-    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat };
+    const costThresholds = Array.isArray(cfg.costThresholds) && cfg.costThresholds.length === 2
+      && cfg.costThresholds.every((v) => typeof v === "number" && v > 0)
+      ? [cfg.costThresholds[0], cfg.costThresholds[1]]
+      : [0.25, 1];
+    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds };
   } catch {
-    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative" };
+    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1] };
   }
 }
 
@@ -654,7 +658,8 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   // Cost (session cost in USD)
   if (show("Cost")) {
     const usd = cost?.total_cost_usd ?? 0;
-    const costColor = usd >= 1 ? c.red : usd >= 0.25 ? c.yellow : c.green;
+    const [costWarn, costDanger] = config.costThresholds;
+    const costColor = usd >= costDanger ? c.red : usd >= costWarn ? c.yellow : c.green;
     columns.push({ label: `${c.slate800bold}Cost:${c.reset}`, value: `${costColor}$${usd.toFixed(2)}${c.reset}` });
   }
 
