@@ -169,7 +169,13 @@ function writeCache(data, error = false) {
   try {
     const dir = dirname(CACHE_PATH);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CACHE_PATH, JSON.stringify({ timestamp: Date.now(), data, error }));
+    // On failure, preserve last known good data so we can fall back to it
+    if (error && data == null) {
+      const prev = readCache();
+      writeFileSync(CACHE_PATH, JSON.stringify({ timestamp: Date.now(), data: prev?.data ?? null, error }));
+    } else {
+      writeFileSync(CACHE_PATH, JSON.stringify({ timestamp: Date.now(), data, error }));
+    }
   } catch { /* ignore */ }
 }
 
@@ -286,7 +292,7 @@ async function getUsage() {
   if (cache && isCacheValid(cache)) return cache.data;
 
   let creds = getCredentials();
-  if (!creds) { writeCache(null, true); return null; }
+  if (!creds) { writeCache(null, true); return cache?.data ?? null; }
 
   // Refresh if expired
   if (creds.expiresAt && creds.expiresAt <= Date.now()) {
@@ -297,16 +303,16 @@ async function getUsage() {
         writeBackCredentials(creds);
       } else {
         writeCache(null, true);
-        return null;
+        return cache?.data ?? null;
       }
     } else {
       writeCache(null, true);
-      return null;
+      return cache?.data ?? null;
     }
   }
 
   const resp = await fetchUsage(creds.accessToken);
-  if (!resp) { writeCache(null, true); return null; }
+  if (!resp) { writeCache(null, true); return cache?.data ?? null; }
 
   const clamp = (v) => (v == null || !isFinite(v)) ? 0 : Math.max(0, Math.min(100, v));
   const parseDate = (s) => { try { const d = new Date(s); return isNaN(d.getTime()) ? null : d; } catch { return null; } };
