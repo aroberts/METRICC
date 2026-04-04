@@ -8,6 +8,8 @@
   // --- Standard (on by default) ---
   "5h Usage": true,      // 5-hour rolling rate-limit utilization %
   "7d Usage": true,      // 7-day rolling rate-limit utilization %
+  "Extra Usage": true,   // Extra usage spend vs prepaid limit ($used / $limit)
+  "extraUsageThresholds": [50, 75], // [yellow, red] % thresholds for extra usage color
   "Context": true,       // Context window usage %
   "Model": true,         // Active Claude model name
   "Version": true,       // Installed version vs latest available

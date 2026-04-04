@@ -29,7 +29,7 @@ const VERSION_CACHE_TTL_MS = 3_600_000; // 1hr cache for npm version check
 
 const ALL_COLUMNS = [
   // Standard
-  "5h Usage", "7d Usage", "Context", "Model", "Version",
+  "5h Usage", "7d Usage", "Extra Usage", "Context", "Model", "Version",
   // Session
   "Session", "Changes", "Directory", "Cost",
   // Advanced
@@ -79,7 +79,7 @@ function parseJsonc(text) {
 
 const SECTION_DEFAULTS = {
   // Standard: on by default
-  "5h Usage": true, "7d Usage": true, "Context": true, "Model": true, "Version": true,
+  "5h Usage": true, "7d Usage": true, "Extra Usage": true, "Context": true, "Model": true, "Version": true,
   // Session: off by default
   "Session": false, "Changes": false, "Directory": false, "Cost": false,
   // Advanced: off by default
@@ -89,7 +89,7 @@ const SECTION_DEFAULTS = {
 function readConfig() {
   try {
     if (!existsSync(CONFIG_PATH)) {
-      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1] };
+      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75] };
     }
     const cfg = parseJsonc(readFileSync(CONFIG_PATH, "utf-8"));
     const enabled = ALL_COLUMNS.filter((id) => {
@@ -102,9 +102,13 @@ function readConfig() {
       && cfg.costThresholds.every((v) => typeof v === "number" && v > 0)
       ? [cfg.costThresholds[0], cfg.costThresholds[1]]
       : [0.25, 1];
-    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds };
+    const extraUsageThresholds = Array.isArray(cfg.extraUsageThresholds) && cfg.extraUsageThresholds.length === 2
+      && cfg.extraUsageThresholds.every((v) => typeof v === "number" && v > 0 && v <= 100)
+      ? [cfg.extraUsageThresholds[0], cfg.extraUsageThresholds[1]]
+      : [50, 75];
+    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds };
   } catch {
-    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1] };
+    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75] };
   }
 }
 
@@ -252,11 +256,11 @@ function refreshAccessToken(refreshToken) {
   });
 }
 
-function fetchUsage(accessToken) {
+function fetchOAuthJson(accessToken, path) {
   return new Promise((resolve) => {
     const req = https.request({
       hostname: "api.anthropic.com",
-      path: "/api/oauth/usage",
+      path,
       method: "GET",
       headers: { Authorization: `Bearer ${accessToken}`, "anthropic-beta": "oauth-2025-04-20", "Content-Type": "application/json" },
       timeout: API_TIMEOUT_MS,
@@ -311,17 +315,35 @@ async function getUsage() {
     }
   }
 
-  const resp = await fetchUsage(creds.accessToken);
+  const resp = await fetchOAuthJson(creds.accessToken, "/api/oauth/usage");
   if (!resp) { writeCache(null, true); return cache?.data ?? null; }
 
   const clamp = (v) => (v == null || !isFinite(v)) ? 0 : Math.max(0, Math.min(100, v));
   const parseDate = (s) => { try { const d = new Date(s); return isNaN(d.getTime()) ? null : d; } catch { return null; } };
+
+  // Fetch prepaid balance if extra usage is enabled
+  let prepaidBalance = null;
+  if (resp.extra_usage?.is_enabled) {
+    const account = await fetchOAuthJson(creds.accessToken, "/api/oauth/account");
+    const orgUuid = account?.memberships?.[0]?.organization?.uuid;
+    if (orgUuid) {
+      const prepaid = await fetchOAuthJson(creds.accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
+      if (prepaid?.amount != null) prepaidBalance = prepaid.amount;
+    }
+  }
 
   const data = {
     fiveHour: clamp(resp.five_hour?.utilization),
     fiveHourResets: parseDate(resp.five_hour?.resets_at),
     sevenDay: clamp(resp.seven_day?.utilization),
     sevenDayResets: parseDate(resp.seven_day?.resets_at),
+    extraUsage: resp.extra_usage ? {
+      isEnabled: resp.extra_usage.is_enabled ?? false,
+      utilization: clamp(resp.extra_usage.utilization),
+      usedCredits: resp.extra_usage.used_credits ?? 0,
+      monthlyLimit: resp.extra_usage.monthly_limit ?? 0,
+      prepaidBalance,
+    } : null,
   };
   writeCache(data);
   return data;
@@ -609,6 +631,23 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
       wkValue = `${c.slate600}N/A${c.reset}`;
     }
     columns.push({ label: `${c.slate800bold}7d Usage:${c.reset}`, value: wkValue });
+  }
+
+  // Extra Usage (auto-hides when data unavailable, e.g. API key users)
+  if (show("Extra Usage") && usage?.extraUsage) {
+    let euValue;
+    if (usage.extraUsage.isEnabled) {
+      const used = (usage.extraUsage.usedCredits / 100).toFixed(2);
+      const [euWarn, euCrit] = config.extraUsageThresholds;
+      const euColor = colorForPercent(usage.extraUsage.utilization, euWarn, euCrit);
+      const balance = usage.extraUsage.prepaidBalance != null
+        ? `${c.slate600} / $${(usage.extraUsage.prepaidBalance / 100).toFixed(2)}${c.reset}`
+        : "";
+      euValue = `${euColor}$${used}${c.reset}${balance}`;
+    } else {
+      euValue = `${c.slate600}Off${c.reset}`;
+    }
+    columns.push({ label: `${c.slate800bold}Extra Usage:${c.reset}`, value: euValue });
   }
 
   // Context
