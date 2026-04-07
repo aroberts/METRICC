@@ -89,7 +89,7 @@ const SECTION_DEFAULTS = {
 function readConfig() {
   try {
     if (!existsSync(CONFIG_PATH)) {
-      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75] };
+      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "" };
     }
     const cfg = parseJsonc(readFileSync(CONFIG_PATH, "utf-8"));
     const enabled = ALL_COLUMNS.filter((id) => {
@@ -106,9 +106,15 @@ function readConfig() {
       && cfg.extraUsageThresholds.every((v) => typeof v === "number" && v > 0 && v <= 100)
       ? [cfg.extraUsageThresholds[0], cfg.extraUsageThresholds[1]]
       : [50, 75];
-    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds };
+    const sevenDayProgress = cfg["7d Progress"] === true || cfg["7d Progress"] === "adaptive"
+      ? cfg["7d Progress"] : false;
+    const sevenDayProgressMargin = typeof cfg["7dProgressMargin"] === "number" && cfg["7dProgressMargin"] >= 0
+      ? cfg["7dProgressMargin"] : 10;
+    const sevenDayProgressPrefix = typeof cfg["7dProgressPrefix"] === "string" ? cfg["7dProgressPrefix"] : "↕";
+    const sevenDayProgressSuffix = typeof cfg["7dProgressSuffix"] === "string" ? cfg["7dProgressSuffix"] : "";
+    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds, sevenDayProgress, sevenDayProgressMargin, sevenDayProgressPrefix, sevenDayProgressSuffix };
   } catch {
-    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75] };
+    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "" };
   }
 }
 
@@ -626,7 +632,20 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     if (usage) {
       const wkColor = colorForPercent(usage.sevenDay, 60, 80);
       const wkReset = formatResetTime(usage.sevenDayResets, config.resetTimeFormat);
-      wkValue = `${wkColor}${Math.round(usage.sevenDay)}%${c.reset}${wkReset ? ` ${wkReset}` : ""}`;
+      // Week progress: how far through the 168h window are we?
+      let progressSuffix = "";
+      if (config.sevenDayProgress && usage.sevenDayResets) {
+        const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+        const windowStart = new Date(usage.sevenDayResets.getTime() - WINDOW_MS);
+        const elapsed = Date.now() - windowStart.getTime();
+        const weekPct = Math.max(0, Math.min(100, Math.round(elapsed / WINDOW_MS * 100)));
+        const shouldShow = config.sevenDayProgress === true
+          || (config.sevenDayProgress === "adaptive" && usage.sevenDay > weekPct + config.sevenDayProgressMargin);
+        if (shouldShow) {
+          progressSuffix = ` ${c.slate600}${config.sevenDayProgressPrefix}${weekPct}%${config.sevenDayProgressSuffix}${c.reset}`;
+        }
+      }
+      wkValue = `${wkColor}${Math.round(usage.sevenDay)}%${c.reset}${progressSuffix}${wkReset ? ` ${wkReset}` : ""}`;
     } else {
       wkValue = `${c.slate600}N/A${c.reset}`;
     }

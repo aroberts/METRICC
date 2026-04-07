@@ -8,6 +8,10 @@
   // --- Standard (on by default) ---
   "5h Usage": true,      // 5-hour rolling rate-limit utilization %
   "7d Usage": true,      // 7-day rolling rate-limit utilization %
+  "7d Progress": false,  // false | true | "adaptive" — show % through the 168h window inline with 7d Usage
+  // "7dProgressMargin": 10,    // adaptive mode: only show when usage% > progress% + margin
+  // "7dProgressPrefix": "↕",   // prefix before the progress %
+  // "7dProgressSuffix": "",     // suffix after the progress %
   "Extra Usage": true,   // Extra usage spend vs prepaid limit ($used / $limit)
   "extraUsageThresholds": [50, 75], // [yellow, red] % thresholds for extra usage color
   "Context": true,       // Context window usage %
