@@ -20,6 +20,7 @@
 
   // --- Session (off by default) ---
   "Session": false,      // How long this conversation has been running
+  "Session ID": false,   // Short hash (first 7 chars) of the current Claude session ID
   "Changes": false,      // Lines added/removed this session
   "Directory": false,    // Current working directory
   "Cost": false,         // Estimated session cost in USD

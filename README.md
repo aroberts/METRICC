@@ -83,7 +83,7 @@ Values change color as they approach limits:
 
 ---
 
-## ![](docs/images/icon-20px-list-checks-orange-500-regular.png) Choose From 16 Stats
+## ![](docs/images/icon-20px-list-checks-orange-500-regular.png) Choose From 17 Stats
 
 ###### Rate Limits
  - ![](docs/images/icon-16px-percent-slate-500-regular.png) 5-hour usage %
@@ -103,6 +103,7 @@ Values change color as they approach limits:
  - ![](docs/images/icon-16px-git-diff-slate-500-regular.png) Lines added / removed
  - ![](docs/images/icon-16px-folder-slate-500-regular.png) Working directory
  - ![](docs/images/icon-16px-currency-dollar-slate-500-regular.png) Session cost (USD)
+ - ![](docs/images/icon-16px-code-slate-500-regular.png) Session ID (short hash)
 
 ###### Model & Version
  - ![](docs/images/icon-16px-cpu-slate-500-regular.png) Current model
@@ -256,6 +257,7 @@ Edit `~/.claude/hud/config.jsonc` (or `$CLAUDE_CONFIG_DIR/hud/config.jsonc` if s
 
   // ── Session (off by default) ──
   "Session": false,
+  "Session ID": false,
   "Changes": false,
   "Directory": false,
   "Cost": false,

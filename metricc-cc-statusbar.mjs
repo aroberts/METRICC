@@ -31,7 +31,7 @@ const ALL_COLUMNS = [
   // Standard
   "5h Usage", "7d Usage", "Extra Usage", "Context", "Model", "Version",
   // Session
-  "Session", "Changes", "Directory", "Cost",
+  "Session", "Session ID", "Changes", "Directory", "Cost",
   // Advanced
   "Tokens", "Output Tokens", "Cache", "API Time", "5h Reset", "7d Reset",
 ];
@@ -81,7 +81,7 @@ const SECTION_DEFAULTS = {
   // Standard: on by default
   "5h Usage": true, "7d Usage": true, "Extra Usage": true, "Context": true, "Model": true, "Version": true,
   // Session: off by default
-  "Session": false, "Changes": false, "Directory": false, "Cost": false,
+  "Session": false, "Session ID": false, "Changes": false, "Directory": false, "Cost": false,
   // Advanced: off by default
   "Tokens": false, "Output Tokens": false, "Cache": false, "API Time": false, "5h Reset": false, "7d Reset": false,
 };
@@ -767,6 +767,14 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   if (show("7d Reset")) {
     const resetStr = usage?.sevenDayResets ? formatResetTime(usage.sevenDayResets, config.resetTimeFormat) : `${c.slate600}N/A${c.reset}`;
     columns.push({ label: `${c.slate800bold}7d Reset:${c.reset}`, value: resetStr || `${c.slate600}N/A${c.reset}` });
+  }
+
+  // Session ID (short hash — first 7 chars of the session UUID). Rendered last so it sits at the far right.
+  if (show("Session ID")) {
+    const sid = stdinData?.session_id;
+    const short = typeof sid === "string" && sid.length > 0 ? sid.replace(/-/g, "").slice(0, 7) : null;
+    const sidVal = short ? `${c.slate600}${short}${c.reset}` : `${c.slate600}N/A${c.reset}`;
+    columns.push({ label: `${c.slate800bold}Session ID:${c.reset}`, value: sidVal });
   }
 
   const layout = config.layout || "vertical";
