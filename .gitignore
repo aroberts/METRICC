@@ -7,6 +7,7 @@ HANDOFF.md
 
 # Cache
 .usage-cache.json
+.org-cache.json
 
 # OMC state
 .omc/

@@ -27,6 +27,7 @@ const STALE_AGENT_MS = 30 * 60_000;   // 30 min = stale agent
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 const VERSION_CACHE_TTL_MS = 3_600_000; // 1hr cache for npm version check
+const ORG_CACHE_TTL_MS = 3_600_000;     // 1hr cache for org name (rarely changes)
 
 const ALL_COLUMNS = [
   // Standard
@@ -44,6 +45,7 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(HOME, ".claude");
 const CONFIG_PATH = join(CLAUDE_DIR, "hud", "config.jsonc");
 const CACHE_PATH = join(CLAUDE_DIR, "hud", ".usage-cache.json");
 const VERSION_CACHE_PATH = join(CLAUDE_DIR, "hud", ".version-cache.json");
+const ORG_CACHE_PATH = join(CLAUDE_DIR, "hud", ".org-cache.json");
 const CRED_PATH = join(CLAUDE_DIR, ".credentials.json");
 
 // ── ANSI Colors ────────────────────────────────────────────────────────────────
@@ -314,6 +316,20 @@ function writeBackCredentials(creds) {
   } catch { /* */ }
 }
 
+// Credentials with a non-expired access token (refreshing if needed), or null.
+async function getValidCredentials() {
+  let creds = getCredentials();
+  if (!creds) return null;
+  if (creds.expiresAt && creds.expiresAt <= Date.now()) {
+    if (!creds.refreshToken) return null;
+    const refreshed = await refreshAccessToken(creds.refreshToken);
+    if (!refreshed) return null;
+    creds = { ...creds, ...refreshed };
+    writeBackCredentials(creds);
+  }
+  return creds;
+}
+
 // First membership org whose name doesn't contain the account email. Skips the
 // auto-named personal org (e.g. "user@x.com's Organization") and surfaces the
 // real org (e.g. "Acme Inc"). Returns null for personal-only accounts.
@@ -328,29 +344,12 @@ function pickOrgName(account) {
   return null;
 }
 
-async function getUsage(config) {
+async function getUsage() {
   const cache = readCache();
   if (cache && isCacheValid(cache)) return cache.data;
 
-  let creds = getCredentials();
+  const creds = await getValidCredentials();
   if (!creds) { writeCache(null, true); return cache?.data ?? null; }
-
-  // Refresh if expired
-  if (creds.expiresAt && creds.expiresAt <= Date.now()) {
-    if (creds.refreshToken) {
-      const refreshed = await refreshAccessToken(creds.refreshToken);
-      if (refreshed) {
-        creds = { ...creds, ...refreshed };
-        writeBackCredentials(creds);
-      } else {
-        writeCache(null, true);
-        return cache?.data ?? null;
-      }
-    } else {
-      writeCache(null, true);
-      return cache?.data ?? null;
-    }
-  }
 
   const resp = await fetchOAuthJson(creds.accessToken, "/api/oauth/usage");
   if (!resp) { writeCache(null, true); return cache?.data ?? null; }
@@ -358,22 +357,14 @@ async function getUsage(config) {
   const clamp = (v) => (v == null || !isFinite(v)) ? 0 : Math.max(0, Math.min(100, v));
   const parseDate = (s) => { try { const d = new Date(s); return isNaN(d.getTime()) ? null : d; } catch { return null; } };
 
-  // The account endpoint feeds both prepaid balance (extra usage) and the org
-  // tag — fetch it once if either consumer needs it.
+  // Fetch prepaid balance if extra usage is enabled
   let prepaidBalance = null;
-  let organization = null;
-  const needOrg = config?.columns?.includes("Organization");
-  if (resp.extra_usage?.is_enabled || needOrg) {
+  if (resp.extra_usage?.is_enabled) {
     const account = await fetchOAuthJson(creds.accessToken, "/api/oauth/account");
-    if (account) {
-      if (needOrg) organization = pickOrgName(account);
-      if (resp.extra_usage?.is_enabled) {
-        const orgUuid = account?.memberships?.[0]?.organization?.uuid;
-        if (orgUuid) {
-          const prepaid = await fetchOAuthJson(creds.accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
-          if (prepaid?.amount != null) prepaidBalance = prepaid.amount;
-        }
-      }
+    const orgUuid = account?.memberships?.[0]?.organization?.uuid;
+    if (orgUuid) {
+      const prepaid = await fetchOAuthJson(creds.accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
+      if (prepaid?.amount != null) prepaidBalance = prepaid.amount;
     }
   }
 
@@ -382,7 +373,6 @@ async function getUsage(config) {
     fiveHourResets: parseDate(resp.five_hour?.resets_at),
     sevenDay: clamp(resp.seven_day?.utilization),
     sevenDayResets: parseDate(resp.seven_day?.resets_at),
-    organization,
     extraUsage: resp.extra_usage ? {
       isEnabled: resp.extra_usage.is_enabled ?? false,
       utilization: clamp(resp.extra_usage.utilization),
@@ -393,6 +383,42 @@ async function getUsage(config) {
   };
   writeCache(data);
   return data;
+}
+
+// ── Organization (Anthropic OAuth account) ───────────────────────────────────
+// Decoupled from usage: the org name is static and lives on the account
+// endpoint, so it stays available even when the usage endpoint is rate-limited
+// or down. Cached 1hr; falls back to the last-known name on fetch failure.
+function readOrgCache() {
+  try {
+    if (!existsSync(ORG_CACHE_PATH)) return null;
+    return JSON.parse(readFileSync(ORG_CACHE_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function writeOrgCache(name) {
+  try {
+    const dir = dirname(ORG_CACHE_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(ORG_CACHE_PATH, JSON.stringify({ timestamp: Date.now(), name }));
+  } catch { /* ignore */ }
+}
+
+async function getOrganization() {
+  const cached = readOrgCache();
+  if (cached && Date.now() - cached.timestamp < ORG_CACHE_TTL_MS) return cached.name;
+
+  const creds = await getValidCredentials();
+  if (!creds) return cached?.name ?? null;
+
+  const account = await fetchOAuthJson(creds.accessToken, "/api/oauth/account");
+  if (!account) return cached?.name ?? null;
+
+  const name = pickOrgName(account);
+  writeOrgCache(name);
+  return name;
 }
 
 // ── Version Check (npm registry) ─────────────────────────────────────────────
@@ -646,7 +672,7 @@ function padAnsi(str, width) {
 
 
 
-function render(usage, transcript, contextPct, modelId, version, latestVersion, cost, stdinData, config) {
+function render(usage, transcript, contextPct, modelId, version, latestVersion, cost, stdinData, config, organization) {
   const pipe = `${c.slate800}│`;
   const show = (id) => config.columns.includes(id);
 
@@ -858,8 +884,8 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   }
 
   // Organization tag — bracketed org name (hidden for personal-only accounts)
-  if (show("Organization") && usage?.organization) {
-    line3.push(`${c.slate600}[${usage.organization}]${c.reset}`);
+  if (show("Organization") && organization) {
+    line3.push(`${c.slate600}[${organization}]${c.reset}`);
   }
 
   if (line3.length > 0) {
@@ -902,14 +928,16 @@ async function main() {
   const modelId = getModelId(stdin);
   const version = getVersion(stdin);
 
-  // Run usage API, transcript parsing, and version check concurrently
-  const [usage, transcript, latestVersion] = await Promise.all([
-    getUsage(config),
+  // Run usage API, transcript parsing, version check, and org lookup concurrently
+  const needOrg = config.columns.includes("Organization");
+  const [usage, transcript, latestVersion, organization] = await Promise.all([
+    getUsage(),
     parseTranscript(stdin.transcript_path),
     getLatestVersion(),
+    needOrg ? getOrganization() : Promise.resolve(null),
   ]);
 
-  console.log(render(usage, transcript, contextPct, modelId, version, latestVersion, stdin.cost, stdin, config));
+  console.log(render(usage, transcript, contextPct, modelId, version, latestVersion, stdin.cost, stdin, config, organization));
 }
 
 main().catch((err) => {
