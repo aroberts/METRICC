@@ -15,6 +15,7 @@ import { join, dirname, basename } from "node:path";
 import { createInterface } from "node:readline";
 import https from "node:https";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const CACHE_TTL_MS = 60_000;          // 60s cache for usage API
@@ -194,6 +195,18 @@ function isCacheValid(cache) {
   return Date.now() - cache.timestamp < ttl;
 }
 
+// Claude Code namespaces its keychain entry by config dir: the default
+// (~/.claude) uses "Claude Code-credentials", while a non-default
+// CLAUDE_CONFIG_DIR appends "-<first 8 hex of sha256(configDir)>". Reading
+// the un-suffixed name in a custom config dir would authenticate as the
+// wrong account, so mirror Claude Code's derivation here.
+function keychainService() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  if (!configDir || configDir === join(HOME, ".claude")) return "Claude Code-credentials";
+  const suffix = createHash("sha256").update(configDir).digest("hex").slice(0, 8);
+  return `Claude Code-credentials-${suffix}`;
+}
+
 function getCredentials() {
   // Primary: read from JSON file (all platforms)
   try {
@@ -209,7 +222,7 @@ function getCredentials() {
   // Fallback: macOS Keychain only
   if (process.platform === "darwin") {
     try {
-      const raw = execSync('security find-generic-password -s "Claude Code-credentials" -w', {
+      const raw = execSync(`security find-generic-password -s ${JSON.stringify(keychainService())} -w`, {
         timeout: 3000,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
