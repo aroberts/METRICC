@@ -35,6 +35,8 @@ const ALL_COLUMNS = [
   "Session", "Session ID", "Changes", "Directory", "Cost",
   // Advanced
   "Tokens", "Output Tokens", "Cache", "API Time", "5h Reset", "7d Reset",
+  // Auto (rendered on line 3, not as a column)
+  "Organization",
 ];
 
 const HOME = homedir();
@@ -85,6 +87,8 @@ const SECTION_DEFAULTS = {
   "Session": false, "Session ID": false, "Changes": false, "Directory": false, "Cost": false,
   // Advanced: off by default
   "Tokens": false, "Output Tokens": false, "Cache": false, "API Time": false, "5h Reset": false, "7d Reset": false,
+  // Auto (line 3): on by default
+  "Organization": true,
 };
 
 function readConfig() {
@@ -310,7 +314,21 @@ function writeBackCredentials(creds) {
   } catch { /* */ }
 }
 
-async function getUsage() {
+// First membership org whose name doesn't contain the account email. Skips the
+// auto-named personal org (e.g. "user@x.com's Organization") and surfaces the
+// real org (e.g. "Acme Inc"). Returns null for personal-only accounts.
+function pickOrgName(account) {
+  const email = account?.email_address;
+  const memberships = account?.memberships;
+  if (!Array.isArray(memberships)) return null;
+  for (const m of memberships) {
+    const name = m?.organization?.name;
+    if (name && (!email || !name.includes(email))) return name;
+  }
+  return null;
+}
+
+async function getUsage(config) {
   const cache = readCache();
   if (cache && isCacheValid(cache)) return cache.data;
 
@@ -340,14 +358,22 @@ async function getUsage() {
   const clamp = (v) => (v == null || !isFinite(v)) ? 0 : Math.max(0, Math.min(100, v));
   const parseDate = (s) => { try { const d = new Date(s); return isNaN(d.getTime()) ? null : d; } catch { return null; } };
 
-  // Fetch prepaid balance if extra usage is enabled
+  // The account endpoint feeds both prepaid balance (extra usage) and the org
+  // tag — fetch it once if either consumer needs it.
   let prepaidBalance = null;
-  if (resp.extra_usage?.is_enabled) {
+  let organization = null;
+  const needOrg = config?.columns?.includes("Organization");
+  if (resp.extra_usage?.is_enabled || needOrg) {
     const account = await fetchOAuthJson(creds.accessToken, "/api/oauth/account");
-    const orgUuid = account?.memberships?.[0]?.organization?.uuid;
-    if (orgUuid) {
-      const prepaid = await fetchOAuthJson(creds.accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
-      if (prepaid?.amount != null) prepaidBalance = prepaid.amount;
+    if (account) {
+      if (needOrg) organization = pickOrgName(account);
+      if (resp.extra_usage?.is_enabled) {
+        const orgUuid = account?.memberships?.[0]?.organization?.uuid;
+        if (orgUuid) {
+          const prepaid = await fetchOAuthJson(creds.accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
+          if (prepaid?.amount != null) prepaidBalance = prepaid.amount;
+        }
+      }
     }
   }
 
@@ -356,6 +382,7 @@ async function getUsage() {
     fiveHourResets: parseDate(resp.five_hour?.resets_at),
     sevenDay: clamp(resp.seven_day?.utilization),
     sevenDayResets: parseDate(resp.seven_day?.resets_at),
+    organization,
     extraUsage: resp.extra_usage ? {
       isEnabled: resp.extra_usage.is_enabled ?? false,
       utilization: clamp(resp.extra_usage.utilization),
@@ -830,6 +857,11 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     line3.push(`${c.slate800bold}Todos:${c.reset} ${todoColor}${done}/${total}${c.reset}`);
   }
 
+  // Organization tag — bracketed org name (hidden for personal-only accounts)
+  if (show("Organization") && usage?.organization) {
+    line3.push(`${c.slate600}[${usage.organization}]${c.reset}`);
+  }
+
   if (line3.length > 0) {
     const line3Sep = ` ${pipe} `;
     output += blankLine + "\n" + c.reset + line3.join(line3Sep);
@@ -872,7 +904,7 @@ async function main() {
 
   // Run usage API, transcript parsing, and version check concurrently
   const [usage, transcript, latestVersion] = await Promise.all([
-    getUsage(),
+    getUsage(config),
     parseTranscript(stdin.transcript_path),
     getLatestVersion(),
   ]);

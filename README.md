@@ -112,6 +112,7 @@ Values change color as they approach limits:
 ###### Auto (appear when active)
  - ![](docs/images/icon-16px-robot-slate-500-regular.png) Running agents + tree view
  - ![](docs/images/icon-16px-check-square-slate-500-regular.png) Todo progress
+ - ![](docs/images/icon-16px-flag-banner-slate-500-regular.png) Organization tag (auto-hidden for personal-only accounts)
 
 ---
 

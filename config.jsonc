@@ -32,5 +32,8 @@
   "Cache": false,        // Prompt cache hit rate %
   "API Time": false,     // Time spent waiting for API responses
   "5h Reset": false,     // Countdown to 5-hour rate-limit reset
-  "7d Reset": false      // Countdown to 7-day rate-limit reset
+  "7d Reset": false,     // Countdown to 7-day rate-limit reset
+
+  // --- Auto / line 3 (on by default) ---
+  "Organization": true   // Bracketed org name on line 3; auto-hidden for personal-only accounts
 }
