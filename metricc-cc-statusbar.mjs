@@ -330,16 +330,19 @@ async function getValidCredentials() {
   return creds;
 }
 
-// First membership org whose name doesn't contain the account email. Skips the
-// auto-named personal org (e.g. "user@x.com's Organization") and surfaces the
-// real org (e.g. "Acme Inc"). Returns null for personal-only accounts.
+// First real (non-personal) membership org. Skips Anthropic's auto-named
+// personal orgs, which come in two shapes: "<email>'s Organization" (caught by
+// the email check) and "<name>'s Individual Org" (caught by the substring).
+// Returns the real org (e.g. "Acme Inc"), or null for personal-only accounts.
 function pickOrgName(account) {
   const email = account?.email_address;
   const memberships = account?.memberships;
   if (!Array.isArray(memberships)) return null;
+  const isPersonal = (name) =>
+    (email && name.includes(email)) || /individual org/i.test(name);
   for (const m of memberships) {
     const name = m?.organization?.name;
-    if (name && (!email || !name.includes(email))) return name;
+    if (name && !isPersonal(name)) return name;
   }
   return null;
 }
