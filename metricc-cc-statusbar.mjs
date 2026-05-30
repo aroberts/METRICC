@@ -847,10 +847,16 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   const blankLine = `\n${c.reset}\u200B`;
   let output;
 
+  // Organization header — bracketed org name above the columns (hidden for
+  // personal-only accounts). Same in both layouts.
+  const orgHeader = (show("Organization") && organization)
+    ? `${c.reset}${c.slate600}[${organization}]${c.reset}\n`
+    : "";
+
   if (layout === "horizontal") {
     // ── Horizontal: single row with "label value" cells ──
     const hRow = c.reset + columns.map((col) => `${col.label} ${col.value}`).join(` ${pipe} `) + c.reset;
-    output = hRow;
+    output = orgHeader + hRow;
   } else {
     // ── Vertical (default): labels on row 1, values on row 2 ──
     const colWidths = columns.map((col) => {
@@ -860,7 +866,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     });
     const labelRow = c.reset + columns.map((col, i) => padAnsi(col.label, colWidths[i])).join(` ${pipe} `) + c.reset;
     const valueRow = c.reset + columns.map((col, i) => padAnsi(col.value, colWidths[i])).join(` ${pipe} `) + c.reset;
-    output = labelRow + "\n" + valueRow;
+    output = orgHeader + labelRow + "\n" + valueRow;
   }
 
   // ── Line 3: Agents, Agent name, Todos (only if any exist) ──
@@ -881,11 +887,6 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     const total = transcript.todos.length;
     const todoColor = done === total ? c.green : c.yellow;
     line3.push(`${c.slate800bold}Todos:${c.reset} ${todoColor}${done}/${total}${c.reset}`);
-  }
-
-  // Organization tag — bracketed org name (hidden for personal-only accounts)
-  if (show("Organization") && organization) {
-    line3.push(`${c.slate600}[${organization}]${c.reset}`);
   }
 
   if (line3.length > 0) {
