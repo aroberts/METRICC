@@ -850,11 +850,14 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   const blankLine = `\n${c.reset}\u200B`;
   let output;
 
-  // Organization header — bracketed org name above the columns (hidden for
-  // personal-only accounts). Same in both layouts.
+  // Organization header — bracketed org name above the columns. For
+  // personal-only accounts (or while the org lookup is cold) we still emit the
+  // row, blanked with a zero-width space, so the statusline's line count stays
+  // invariant. A variable height here desyncs the rows Claude Code reserves
+  // from the rows we actually draw, pushing the input off the `>` caret.
   const orgHeader = (show("Organization") && organization)
     ? `${c.reset}${c.slate600}[${organization}]${c.reset}\n`
-    : "";
+    : `${c.reset}\u200B\n`;
 
   if (layout === "horizontal") {
     // ── Horizontal: single row with "label value" cells ──
@@ -941,7 +944,10 @@ async function main() {
     needOrg ? getOrganization() : Promise.resolve(null),
   ]);
 
-  console.log(render(usage, transcript, contextPct, modelId, version, latestVersion, stdin.cost, stdin, config, organization));
+  // render() owns its trailing newline (… + blankLine + "\n"); write it
+  // directly so console.log doesn't silently append a second one and add a
+  // stray blank line below the statusline.
+  process.stdout.write(render(usage, transcript, contextPct, modelId, version, latestVersion, stdin.cost, stdin, config, organization));
 }
 
 main().catch((err) => {
