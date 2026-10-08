@@ -127,7 +127,7 @@ function readUsageRetryConfig(cfg) {
 function readConfig() {
   try {
     if (!existsSync(CONFIG_PATH)) {
-      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "", usage: readUsageRetryConfig({}) };
+      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], extraUsageLabel: "Extra Usage", extraUsageFormat: "dollars", monthProgress: false, monthProgressMargin: 10, monthProgressPrefix: "↕", monthProgressSuffix: "", sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "", usage: readUsageRetryConfig({}) };
     }
     const cfg = parseJsonc(readFileSync(CONFIG_PATH, "utf-8"));
     const enabled = ALL_COLUMNS.filter((id) => {
@@ -144,15 +144,23 @@ function readConfig() {
       && cfg.extraUsageThresholds.every((v) => typeof v === "number" && v > 0 && v <= 100)
       ? [cfg.extraUsageThresholds[0], cfg.extraUsageThresholds[1]]
       : [50, 75];
+    const extraUsageLabel = typeof cfg.extraUsageLabel === "string" && cfg.extraUsageLabel ? cfg.extraUsageLabel : "Extra Usage";
+    const extraUsageFormat = cfg.extraUsageFormat === "percent" ? "percent" : "dollars";
     const sevenDayProgress = cfg["7d Progress"] === true || cfg["7d Progress"] === "adaptive"
       ? cfg["7d Progress"] : false;
     const sevenDayProgressMargin = typeof cfg["7dProgressMargin"] === "number" && cfg["7dProgressMargin"] >= 0
       ? cfg["7dProgressMargin"] : 10;
     const sevenDayProgressPrefix = typeof cfg["7dProgressPrefix"] === "string" ? cfg["7dProgressPrefix"] : "↕";
     const sevenDayProgressSuffix = typeof cfg["7dProgressSuffix"] === "string" ? cfg["7dProgressSuffix"] : "";
-    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds, sevenDayProgress, sevenDayProgressMargin, sevenDayProgressPrefix, sevenDayProgressSuffix, usage: readUsageRetryConfig(cfg) };
+    const monthProgress = cfg["Month Progress"] === true || cfg["Month Progress"] === "adaptive"
+      ? cfg["Month Progress"] : false;
+    const monthProgressMargin = typeof cfg.monthProgressMargin === "number" && cfg.monthProgressMargin >= 0
+      ? cfg.monthProgressMargin : 10;
+    const monthProgressPrefix = typeof cfg.monthProgressPrefix === "string" ? cfg.monthProgressPrefix : "↕";
+    const monthProgressSuffix = typeof cfg.monthProgressSuffix === "string" ? cfg.monthProgressSuffix : "";
+    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds, extraUsageLabel, extraUsageFormat, monthProgress, monthProgressMargin, monthProgressPrefix, monthProgressSuffix, sevenDayProgress, sevenDayProgressMargin, sevenDayProgressPrefix, sevenDayProgressSuffix, usage: readUsageRetryConfig(cfg) };
   } catch {
-    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "", usage: readUsageRetryConfig({}) };
+    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], extraUsageLabel: "Extra Usage", extraUsageFormat: "dollars", monthProgress: false, monthProgressMargin: 10, monthProgressPrefix: "↕", monthProgressSuffix: "", sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "", usage: readUsageRetryConfig({}) };
   }
 }
 
@@ -855,17 +863,34 @@ function render(usage, usageStale, transcript, contextPct, modelId, version, lat
   if (show("Extra Usage") && usage?.extraUsage) {
     let euValue;
     if (usage.extraUsage.isEnabled) {
-      const used = (usage.extraUsage.usedCredits / 100).toFixed(2);
       const [euWarn, euCrit] = config.extraUsageThresholds;
       const euColor = dimIfStale(colorForPercent(usage.extraUsage.utilization, euWarn, euCrit));
-      const balance = usage.extraUsage.prepaidBalance != null
-        ? `${c.slate600} / $${(usage.extraUsage.prepaidBalance / 100).toFixed(2)}${c.reset}`
-        : "";
-      euValue = `${euColor}$${used}${c.reset}${balance}`;
+      if (config.extraUsageFormat === "percent") {
+        euValue = `${euColor}${usage.extraUsage.utilization.toFixed(1)}%${c.reset}`;
+      } else {
+        const used = (usage.extraUsage.usedCredits / 100).toFixed(2);
+        const balance = usage.extraUsage.prepaidBalance != null
+          ? `${c.slate600} / $${(usage.extraUsage.prepaidBalance / 100).toFixed(2)}${c.reset}`
+          : "";
+        euValue = `${euColor}$${used}${c.reset}${balance}`;
+      }
+      // Month progress: how far through the calendar month are we? extra_usage
+      // carries no known reset time (unlike seven_day.resets_at), so assume one.
+      if (config.monthProgress) {
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        const monthPct = Math.max(0, Math.min(100, Math.round((now - monthStart) / (monthEnd - monthStart) * 100)));
+        const shouldShow = config.monthProgress === true
+          || (config.monthProgress === "adaptive" && usage.extraUsage.utilization > monthPct + config.monthProgressMargin);
+        if (shouldShow) {
+          euValue += ` ${c.slate600}${config.monthProgressPrefix}${monthPct}%${config.monthProgressSuffix}${c.reset}`;
+        }
+      }
     } else {
       euValue = `${c.slate600}Off${c.reset}`;
     }
-    columns.push({ label: `${c.slate800bold}Extra Usage:${c.reset}`, value: euValue });
+    columns.push({ label: `${c.slate800bold}${config.extraUsageLabel}:${c.reset}`, value: euValue });
   }
 
   // Context

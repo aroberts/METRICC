@@ -14,6 +14,12 @@
   // "7dProgressSuffix": "",     // suffix after the progress %
   "Extra Usage": true,   // Extra usage spend vs prepaid limit ($used / $limit)
   "extraUsageThresholds": [50, 75], // [yellow, red] % thresholds for extra usage color
+  "extraUsageLabel": "Extra Usage", // column label, e.g. "Monthly Spend" for usage-based billing
+  "extraUsageFormat": "dollars",    // "dollars" = $used / $balance, "percent" = % of monthly limit
+  "Month Progress": false,          // false | true | "adaptive" — show % through the calendar month inline with Extra Usage
+  // "monthProgressMargin": 10,     // adaptive mode: only show when usage% > progress% + margin
+  // "monthProgressPrefix": "↕",    // prefix before the progress %
+  // "monthProgressSuffix": "",      // suffix after the progress %
   "Context": true,       // Context window usage %
   "Model": true,         // Active Claude model name
   "Version": true,       // Installed version vs latest available
