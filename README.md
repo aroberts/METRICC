@@ -237,6 +237,8 @@ Then add to `C:\Users\YourName\.claude\settings.json`:
 
 </details>
 
+> **Want the bar to redraw on a timer?** By default it only redraws when something happens (e.g. you send a message), so an idle session shows frozen numbers in between. Add `"refreshInterval": 10` inside the `statusLine` block above to redraw every 10s instead. It costs a fresh Node process + transcript parse each interval, so it's opt-in rather than part of the default setup.
+
 > **Upgrading?** Re-run the download or let Claude re-install. Your config is preserved.
 
 ---
@@ -300,6 +302,7 @@ METRICC was inspired by the [oh-my-claudecode](https://github.com/Yeachan-Heo/oh
 
 Thanks to the following contributors who submitted PRs that helped shape improvements already included in METRICC:
 
+ - [@zachary95](https://github.com/zachary95) — human-friendly model names ([#6](https://github.com/professionalcrastinationco/METRICC/pull/6)), shared usage-poll lock ([#5](https://github.com/professionalcrastinationco/METRICC/pull/5)), fresh-install lock fix ([#8](https://github.com/professionalcrastinationco/METRICC/pull/8)), stale-usage fallback ([#9](https://github.com/professionalcrastinationco/METRICC/pull/9)), 429 backoff and adaptive TTL ([#10](https://github.com/professionalcrastinationco/METRICC/pull/10))
  - [@crimist](https://github.com/crimist) — API cost support ([#2](https://github.com/professionalcrastinationco/METRICC/pull/2))
  - [@DustyDiamond](https://github.com/DustyDiamond) — statusLine config fix ([#1](https://github.com/professionalcrastinationco/METRICC/pull/1))
 

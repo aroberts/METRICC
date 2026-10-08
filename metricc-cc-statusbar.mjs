@@ -9,7 +9,7 @@
  * - Transcript JSONL (session start, running agents)
  */
 
-import { existsSync, readFileSync, writeFileSync, statSync, openSync, readSync, closeSync, mkdirSync, createReadStream } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, statSync, openSync, readSync, closeSync, mkdirSync, unlinkSync, createReadStream } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { createInterface } from "node:readline";
@@ -18,8 +18,16 @@ import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 // ── Constants ──────────────────────────────────────────────────────────────────
-const CACHE_TTL_MS = 60_000;          // 60s cache for usage API
-const CACHE_TTL_FAILURE_MS = 15_000;  // 15s on failure
+// Defaults for the usage-API cache/retry cadence — all overridable via config.jsonc, see readConfig().
+const DEFAULT_SUCCESS_TTL_MS = 60_000;               // normal cache TTL once a fetch succeeds
+const DEFAULT_NON_RATE_LIMIT_FAILURE_TTL_MS = 15_000; // flat retry delay for non-429 failures (network error, 5xx, etc.)
+const DEFAULT_RATE_LIMIT_BACKOFF_BASE_MS = 60_000;    // first 429 backoff starts here
+const DEFAULT_RATE_LIMIT_BACKOFF_MULTIPLIER = 2;      // each consecutive 429 multiplies the backoff by this
+const DEFAULT_RATE_LIMIT_BACKOFF_MAX_MS = 300_000;    // backoff never grows past 5 minutes
+const DEFAULT_RATE_LIMIT_BACKOFF_DECAY_FACTOR = 0.8;  // each success shrinks a lingering backoff by 20%
+const DEFAULT_SWEET_SPOT_SENSITIVITY = 1.5;           // how fast the learned TTL climbs toward the cap as the recent 429 rate rises
+const HISTORY_MAX_ENTRIES = 100;      // sweet-spot TTL is learned from this many recent fetch outcomes
+const LOCK_STALE_MS = 20_000;         // abandon a lock older than this (crashed holder)
 const API_TIMEOUT_MS = 8000;
 const MAX_TAIL_BYTES = 512 * 1024;    // 500KB tail read for large transcripts
 const MAX_AGENT_MAP = 100;
@@ -44,7 +52,9 @@ const HOME = homedir();
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(HOME, ".claude");
 const CONFIG_PATH = join(CLAUDE_DIR, "hud", "config.jsonc");
 const CACHE_PATH = join(CLAUDE_DIR, "hud", ".usage-cache.json");
+const LOCK_PATH = join(CLAUDE_DIR, "hud", ".usage-cache.lock");
 const VERSION_CACHE_PATH = join(CLAUDE_DIR, "hud", ".version-cache.json");
+const HISTORY_PATH = join(CLAUDE_DIR, "hud", ".usage-history.json");
 const ORG_CACHE_PATH = join(CLAUDE_DIR, "hud", ".org-cache.json");
 const CRED_PATH = join(CLAUDE_DIR, ".credentials.json");
 
@@ -93,10 +103,31 @@ const SECTION_DEFAULTS = {
   "Organization": true,
 };
 
+const USAGE_RETRY_DEFAULTS = {
+  successTtlMs: DEFAULT_SUCCESS_TTL_MS,
+  nonRateLimitFailureTtlMs: DEFAULT_NON_RATE_LIMIT_FAILURE_TTL_MS,
+  rateLimitBackoffBaseMs: DEFAULT_RATE_LIMIT_BACKOFF_BASE_MS,
+  rateLimitBackoffMultiplier: DEFAULT_RATE_LIMIT_BACKOFF_MULTIPLIER,
+  rateLimitBackoffMaxMs: DEFAULT_RATE_LIMIT_BACKOFF_MAX_MS,
+  rateLimitBackoffDecayFactor: DEFAULT_RATE_LIMIT_BACKOFF_DECAY_FACTOR,
+  sweetSpotSensitivity: DEFAULT_SWEET_SPOT_SENSITIVITY,
+};
+
+// Reads usage-API retry/backoff tunables from config.jsonc, falling back to defaults for missing or invalid values.
+function readUsageRetryConfig(cfg) {
+  const usage = {};
+  for (const key of Object.keys(USAGE_RETRY_DEFAULTS)) {
+    const value = cfg[key];
+    const isValidNumber = typeof value === "number" && isFinite(value) && value > 0;
+    usage[key] = isValidNumber ? value : USAGE_RETRY_DEFAULTS[key];
+  }
+  return usage;
+}
+
 function readConfig() {
   try {
     if (!existsSync(CONFIG_PATH)) {
-      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "" };
+      return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "", usage: readUsageRetryConfig({}) };
     }
     const cfg = parseJsonc(readFileSync(CONFIG_PATH, "utf-8"));
     const enabled = ALL_COLUMNS.filter((id) => {
@@ -119,9 +150,9 @@ function readConfig() {
       ? cfg["7dProgressMargin"] : 10;
     const sevenDayProgressPrefix = typeof cfg["7dProgressPrefix"] === "string" ? cfg["7dProgressPrefix"] : "↕";
     const sevenDayProgressSuffix = typeof cfg["7dProgressSuffix"] === "string" ? cfg["7dProgressSuffix"] : "";
-    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds, sevenDayProgress, sevenDayProgressMargin, sevenDayProgressPrefix, sevenDayProgressSuffix };
+    return { columns: enabled.length > 0 ? enabled : ALL_COLUMNS, layout, resetTimeFormat, costThresholds, extraUsageThresholds, sevenDayProgress, sevenDayProgressMargin, sevenDayProgressPrefix, sevenDayProgressSuffix, usage: readUsageRetryConfig(cfg) };
   } catch {
-    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "" };
+    return { columns: ALL_COLUMNS.filter((id) => SECTION_DEFAULTS[id] !== false), layout: "vertical", resetTimeFormat: "relative", costThresholds: [0.25, 1], extraUsageThresholds: [50, 75], sevenDayProgress: false, sevenDayProgressMargin: 10, sevenDayProgressPrefix: "↕", sevenDayProgressSuffix: "", usage: readUsageRetryConfig({}) };
   }
 }
 
@@ -152,14 +183,16 @@ function getContextPercent(stdin) {
 }
 
 function getModelId(stdin) {
-  const id = stdin.model?.id ?? stdin.model?.display_name ?? "unknown";
-  // "claude-opus-4-6" → "Opus 4.6", "claude-sonnet-4-5-20250929" → "Sonnet 4.5"
-  const m = id.match(/(?:claude-)?(opus|sonnet|haiku)-(\d+)-(\d+)/);
-  if (m) {
-    const name = m[1].charAt(0).toUpperCase() + m[1].slice(1);
-    return `${name} ${m[2]}.${m[3]}`;
-  }
-  return id;
+  // Claude Code sends the human-friendly name directly — prefer it over guessing from the id.
+  if (stdin.model?.display_name) return stdin.model.display_name;
+  const id = stdin.model?.id ?? "unknown";
+  // No whitelist of family names: split into name words vs version numbers, whatever they are.
+  // "claude-opus-4-6" → "Opus 4.6", "claude-encyclopedia-5" → "Encyclopedia 5", "claude-haiku-4-5-20251001" → "Haiku 4.5"
+  const parts = id.split("-").filter((part) => part !== "claude" && !/^\d{8}$/.test(part)); // drop date stamps too
+  const name = parts.filter((part) => !/^\d+$/.test(part)).map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+  const version = parts.filter((part) => /^\d+$/.test(part)).join(".");
+  if (!name) return id;
+  return version ? `${name} ${version}` : name;
 }
 
 function getVersion(stdin) {
@@ -182,22 +215,65 @@ function readCache() {
   }
 }
 
-function writeCache(data, error = false) {
+function writeCache(data, error = false, { rateLimited = false, backoffMs = null } = {}) {
   try {
     const dir = dirname(CACHE_PATH);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    // On failure, preserve last known good data so we can fall back to it
-    if (error && data == null) {
-      const prev = readCache();
-      writeFileSync(CACHE_PATH, JSON.stringify({ timestamp: Date.now(), data: prev?.data ?? null, error }));
-    } else {
-      writeFileSync(CACHE_PATH, JSON.stringify({ timestamp: Date.now(), data, error }));
-    }
+    // Temp-file-then-rename: readers never observe a partial write.
+    const tmpPath = `${CACHE_PATH}.${process.pid}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify({ timestamp: Date.now(), data, error, rateLimited, backoffMs }));
+    renameSync(tmpPath, CACHE_PATH);
   } catch { /* ignore */ }
 }
 
-function isCacheValid(cache) {
-  const ttl = cache.error ? CACHE_TTL_FAILURE_MS : CACHE_TTL_MS;
+// Rolling record of the last HISTORY_MAX_ENTRIES fetch outcomes, used to learn a per-machine sweet-spot TTL.
+// Concurrent sessions may race this read-modify-write; losing an occasional entry is fine for a rolling average.
+function readHistory() {
+  try {
+    if (!existsSync(HISTORY_PATH)) return [];
+    const entries = JSON.parse(readFileSync(HISTORY_PATH, "utf-8"));
+    return Array.isArray(entries) ? entries : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordHistoryEntry(rateLimited) {
+  try {
+    const entries = readHistory();
+    entries.push({ timestamp: Date.now(), rateLimited });
+    const trimmed = entries.slice(-HISTORY_MAX_ENTRIES);
+    const dir = dirname(HISTORY_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tmpPath = `${HISTORY_PATH}.${process.pid}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(trimmed));
+    renameSync(tmpPath, HISTORY_PATH);
+  } catch { /* ignore */ }
+}
+
+// The sweet-spot TTL: how often we can afford to actually hit the API without provoking 429s, learned from
+// how often recent attempts got rate-limited. 0% rate-limited in the window → stay at the fast default TTL
+// (favor freshness). As the rate-limited fraction climbs, slide toward the backoff cap (favor avoiding 429s),
+// with a safety margin so the learned TTL sits a bit above the minimum that was merely "good enough" recently.
+function computeSweetSpotTtlMs(usageConfig) {
+  const entries = readHistory();
+  if (entries.length === 0) return usageConfig.successTtlMs;
+
+  const rateLimitedCount = entries.filter((entry) => entry.rateLimited).length;
+  const rateLimitedRatio = rateLimitedCount / entries.length;
+
+  const rangeMs = usageConfig.rateLimitBackoffMaxMs - usageConfig.successTtlMs;
+  const sweetSpotMs = usageConfig.successTtlMs + rateLimitedRatio * usageConfig.sweetSpotSensitivity * rangeMs;
+  return Math.max(usageConfig.successTtlMs, Math.min(sweetSpotMs, usageConfig.rateLimitBackoffMaxMs));
+}
+
+// 429s get their own exponential-backoff TTL (stored on the cache entry); other failures use a flat retry delay;
+// a successful fetch uses the learned sweet-spot TTL instead of the raw configured default.
+function isCacheValid(cache, usageConfig) {
+  let ttl = computeSweetSpotTtlMs(usageConfig);
+  if (cache.error) {
+    ttl = cache.rateLimited ? (cache.backoffMs ?? usageConfig.rateLimitBackoffBaseMs) : usageConfig.nonRateLimitFailureTtlMs;
+  }
   return Date.now() - cache.timestamp < ttl;
 }
 
@@ -281,6 +357,7 @@ function refreshAccessToken(refreshToken) {
   });
 }
 
+// Includes status so callers can see 429s, not just the body.
 function fetchOAuthJson(accessToken, path) {
   return new Promise((resolve) => {
     const req = https.request({
@@ -294,14 +371,34 @@ function fetchOAuthJson(accessToken, path) {
       res.on("data", (ch) => { data += ch; });
       res.on("end", () => {
         if (res.statusCode === 200) {
-          try { resolve(JSON.parse(data)); } catch { resolve(null); }
-        } else resolve(null);
+          try { resolve({ status: 200, body: JSON.parse(data) }); } catch { resolve({ status: 200, body: null }); }
+        } else {
+          resolve({ status: res.statusCode, body: null });
+        }
       });
     });
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.on("error", () => resolve({ status: 0, body: null }));
+    req.on("timeout", () => { req.destroy(); resolve({ status: 0, body: null }); });
     req.end();
   });
+}
+
+function normalizeUsage(resp, prepaidBalance) {
+  const clamp = (v) => (v == null || !isFinite(v)) ? 0 : Math.max(0, Math.min(100, v));
+  const parseDate = (s) => { try { const d = new Date(s); return isNaN(d.getTime()) ? null : d; } catch { return null; } };
+  return {
+    fiveHour: clamp(resp.five_hour?.utilization),
+    fiveHourResets: parseDate(resp.five_hour?.resets_at),
+    sevenDay: clamp(resp.seven_day?.utilization),
+    sevenDayResets: parseDate(resp.seven_day?.resets_at),
+    extraUsage: resp.extra_usage ? {
+      isEnabled: resp.extra_usage.is_enabled ?? false,
+      utilization: clamp(resp.extra_usage.utilization),
+      usedCredits: resp.extra_usage.used_credits ?? 0,
+      monthlyLimit: resp.extra_usage.monthly_limit ?? 0,
+      prepaidBalance,
+    } : null,
+  };
 }
 
 function writeBackCredentials(creds) {
@@ -312,7 +409,11 @@ function writeBackCredentials(creds) {
     target.accessToken = creds.accessToken;
     if (creds.expiresAt != null) target.expiresAt = creds.expiresAt;
     if (creds.refreshToken) target.refreshToken = creds.refreshToken;
-    writeFileSync(CRED_PATH, JSON.stringify(parsed, null, 2));
+    // Rename replaces the inode, so the temp file's mode is what survives, not
+    // the original's. Create it 0600 or the tokens land world-readable on POSIX.
+    const tmpPath = `${CRED_PATH}.${process.pid}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+    renameSync(tmpPath, CRED_PATH);
   } catch { /* */ }
 }
 
@@ -347,45 +448,72 @@ function pickOrgName(account) {
   return null;
 }
 
-async function getUsage() {
-  const cache = readCache();
-  if (cache && isCacheValid(cache)) return cache.data;
-
-  const creds = await getValidCredentials();
-  if (!creds) { writeCache(null, true); return cache?.data ?? null; }
-
-  const resp = await fetchOAuthJson(creds.accessToken, "/api/oauth/usage");
-  if (!resp) { writeCache(null, true); return cache?.data ?? null; }
-
-  const clamp = (v) => (v == null || !isFinite(v)) ? 0 : Math.max(0, Math.min(100, v));
-  const parseDate = (s) => { try { const d = new Date(s); return isNaN(d.getTime()) ? null : d; } catch { return null; } };
-
-  // Fetch prepaid balance if extra usage is enabled
-  let prepaidBalance = null;
-  if (resp.extra_usage?.is_enabled) {
-    const account = await fetchOAuthJson(creds.accessToken, "/api/oauth/account");
-    const orgUuid = account?.memberships?.[0]?.organization?.uuid;
-    if (orgUuid) {
-      const prepaid = await fetchOAuthJson(creds.accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
-      if (prepaid?.amount != null) prepaidBalance = prepaid.amount;
-    }
+// Only one session refreshes the cache at a time; the rest read what it wrote.
+function acquireLock() {
+  try {
+    const dir = dirname(LOCK_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(LOCK_PATH, String(process.pid), { flag: "wx" });
+    return true;
+  } catch (err) {
+    if (err.code !== "EEXIST") return false;
+    try {
+      if (Date.now() - statSync(LOCK_PATH).mtimeMs > LOCK_STALE_MS) {
+        writeFileSync(LOCK_PATH, String(process.pid));
+        return true;
+      }
+    } catch { /* lock vanished mid-check; treat as contended */ }
+    return false;
   }
+}
 
-  const data = {
-    fiveHour: clamp(resp.five_hour?.utilization),
-    fiveHourResets: parseDate(resp.five_hour?.resets_at),
-    sevenDay: clamp(resp.seven_day?.utilization),
-    sevenDayResets: parseDate(resp.seven_day?.resets_at),
-    extraUsage: resp.extra_usage ? {
-      isEnabled: resp.extra_usage.is_enabled ?? false,
-      utilization: clamp(resp.extra_usage.utilization),
-      usedCredits: resp.extra_usage.used_credits ?? 0,
-      monthlyLimit: resp.extra_usage.monthly_limit ?? 0,
-      prepaidBalance,
-    } : null,
-  };
-  writeCache(data);
-  return data;
+function releaseLock() {
+  try { unlinkSync(LOCK_PATH); } catch { /* already gone */ }
+}
+
+// Prepaid balance (cents) for the account's primary org, or null.
+async function fetchPrepaidBalance(accessToken) {
+  const account = await fetchOAuthJson(accessToken, "/api/oauth/account");
+  const orgUuid = account.body?.memberships?.[0]?.organization?.uuid;
+  if (!orgUuid) return null;
+  const prepaid = await fetchOAuthJson(accessToken, `/api/oauth/organizations/${orgUuid}/prepaid/credits`);
+  return prepaid.body?.amount ?? null;
+}
+
+// { data, stale } — stale is true when data is carried forward from the last successful fetch, not a live read.
+async function getUsage(usageConfig) {
+  const cache = readCache();
+  const previousData = cache?.data ?? null;
+  const asStaleResult = () => ({ data: previousData, stale: previousData != null });
+
+  if (cache && isCacheValid(cache, usageConfig)) return { data: cache.data, stale: !!cache.error };
+  if (!acquireLock()) return asStaleResult();
+
+  // Carries the last-known backoff forward so consecutive 429s keep growing it, and successes keep decaying it.
+  const priorBackoffMs = cache?.backoffMs ?? usageConfig.rateLimitBackoffBaseMs;
+
+  try {
+    const creds = await getValidCredentials();
+    if (!creds) { writeCache(previousData, true); return asStaleResult(); }
+
+    const resp = await fetchOAuthJson(creds.accessToken, "/api/oauth/usage");
+    if (resp.status === 429) {
+      const nextBackoffMs = Math.min(priorBackoffMs * usageConfig.rateLimitBackoffMultiplier, usageConfig.rateLimitBackoffMaxMs);
+      writeCache(previousData, true, { rateLimited: true, backoffMs: nextBackoffMs });
+      recordHistoryEntry(true);
+      return asStaleResult();
+    }
+    if (resp.status !== 200 || !resp.body) { writeCache(previousData, true); return asStaleResult(); }
+
+    const prepaidBalance = resp.body.extra_usage?.is_enabled ? await fetchPrepaidBalance(creds.accessToken) : null;
+    const data = normalizeUsage(resp.body, prepaidBalance);
+    const decayedBackoffMs = Math.max(usageConfig.rateLimitBackoffBaseMs, priorBackoffMs * usageConfig.rateLimitBackoffDecayFactor);
+    writeCache(data, false, { backoffMs: decayedBackoffMs });
+    recordHistoryEntry(false);
+    return { data, stale: false };
+  } finally {
+    releaseLock();
+  }
 }
 
 // ── Organization (Anthropic OAuth account) ───────────────────────────────────
@@ -417,9 +545,9 @@ async function getOrganization() {
   if (!creds) return cached?.name ?? null;
 
   const account = await fetchOAuthJson(creds.accessToken, "/api/oauth/account");
-  if (!account) return cached?.name ?? null;
+  if (account.status !== 200 || !account.body) return cached?.name ?? null;
 
-  const name = pickOrgName(account);
+  const name = pickOrgName(account.body);
   writeOrgCache(name);
   return name;
 }
@@ -675,9 +803,11 @@ function padAnsi(str, width) {
 
 
 
-function render(usage, transcript, contextPct, modelId, version, latestVersion, cost, stdinData, config, organization) {
+function render(usage, usageStale, transcript, contextPct, modelId, version, latestVersion, cost, stdinData, config, organization) {
   const pipe = `${c.slate800}│`;
   const show = (id) => config.columns.includes(id);
+  // Dimmed color still shows the real value's severity (red/yellow/green), just softened to signal "from cache".
+  const dimIfStale = (color) => (usageStale ? `${c.dim}${color}` : color);
 
   // ── Build columns: { label, value } ──
   const columns = [];
@@ -686,9 +816,9 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   if (show("5h Usage")) {
     let fhValue;
     if (usage) {
-      const fhColor = colorForPercent(usage.fiveHour, 60, 80);
+      const fhColor = dimIfStale(colorForPercent(usage.fiveHour, 60, 80));
       const fhReset = formatResetTime(usage.fiveHourResets, config.resetTimeFormat, { showDate: false });
-      fhValue = `${fhColor}${Math.round(usage.fiveHour)}%${c.reset}${fhReset ? ` ${fhReset}` : ""}`;
+      fhValue = `${fhColor}${Math.round(usage.fiveHour)}%${c.reset}${fhReset ? ` ${dimIfStale(fhReset)}` : ""}`;
     } else {
       fhValue = `${c.slate600}N/A${c.reset}`;
     }
@@ -699,7 +829,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
   if (show("7d Usage")) {
     let wkValue;
     if (usage) {
-      const wkColor = colorForPercent(usage.sevenDay, 60, 80);
+      const wkColor = dimIfStale(colorForPercent(usage.sevenDay, 60, 80));
       const wkReset = formatResetTime(usage.sevenDayResets, config.resetTimeFormat);
       // Week progress: how far through the 168h window are we?
       let progressSuffix = "";
@@ -714,7 +844,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
           progressSuffix = ` ${c.slate600}${config.sevenDayProgressPrefix}${weekPct}%${config.sevenDayProgressSuffix}${c.reset}`;
         }
       }
-      wkValue = `${wkColor}${Math.round(usage.sevenDay)}%${c.reset}${progressSuffix}${wkReset ? ` ${wkReset}` : ""}`;
+      wkValue = `${wkColor}${Math.round(usage.sevenDay)}%${c.reset}${progressSuffix}${wkReset ? ` ${dimIfStale(wkReset)}` : ""}`;
     } else {
       wkValue = `${c.slate600}N/A${c.reset}`;
     }
@@ -727,7 +857,7 @@ function render(usage, transcript, contextPct, modelId, version, latestVersion, 
     if (usage.extraUsage.isEnabled) {
       const used = (usage.extraUsage.usedCredits / 100).toFixed(2);
       const [euWarn, euCrit] = config.extraUsageThresholds;
-      const euColor = colorForPercent(usage.extraUsage.utilization, euWarn, euCrit);
+      const euColor = dimIfStale(colorForPercent(usage.extraUsage.utilization, euWarn, euCrit));
       const balance = usage.extraUsage.prepaidBalance != null
         ? `${c.slate600} / $${(usage.extraUsage.prepaidBalance / 100).toFixed(2)}${c.reset}`
         : "";
@@ -937,8 +1067,8 @@ async function main() {
 
   // Run usage API, transcript parsing, version check, and org lookup concurrently
   const needOrg = config.columns.includes("Organization");
-  const [usage, transcript, latestVersion, organization] = await Promise.all([
-    getUsage(),
+  const [usageResult, transcript, latestVersion, organization] = await Promise.all([
+    getUsage(config.usage),
     parseTranscript(stdin.transcript_path),
     getLatestVersion(),
     needOrg ? getOrganization() : Promise.resolve(null),
@@ -947,7 +1077,7 @@ async function main() {
   // render() owns its trailing newline (… + blankLine + "\n"); write it
   // directly so console.log doesn't silently append a second one and add a
   // stray blank line below the statusline.
-  process.stdout.write(render(usage, transcript, contextPct, modelId, version, latestVersion, stdin.cost, stdin, config, organization));
+  process.stdout.write(render(usageResult.data, usageResult.stale, transcript, contextPct, modelId, version, latestVersion, stdin.cost, stdin, config, organization));
 }
 
 main().catch((err) => {
